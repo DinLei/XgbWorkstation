@@ -1,0 +1,582 @@
+/*!
+ * Copyright 2014 by Contributors
+ * \file tree_model.h
+ * \brief model structure for tree
+ * \author Tianqi Chen
+ */
+#ifndef XGBOOST_TREE_MODEL_H_
+#define XGBOOST_TREE_MODEL_H_
+
+#include <limits>
+#include <vector>
+#include <string>
+#include <cstring>
+#include <algorithm>
+#include <unordered_map>
+#include <fstream>
+#include "logging.h"
+#include "fvec.h"
+
+
+
+namespace xgboost {
+
+    typedef std::pair<int, int> pii;
+
+/*! \brief meta parameters of the tree */
+    struct TreeParam {
+        /*! \brief number of start root */
+        int num_roots;
+        /*! \brief total number of nodes */
+        int num_nodes;
+        /*!\brief number of deleted nodes */
+        int num_deleted;
+        /*! \brief maximum depth, this is a statistics of the tree */
+        int max_depth;
+        /*! \brief number of features used for tree construction */
+        int num_feature;
+        /*!
+         * \brief leaf vector size, used for vector tree
+         * used to store more than one dimensional information in tree
+         */
+        int size_leaf_vector;
+        /*! \brief reserved part, make sure alignment works for 64bit */
+        int reserved[31];
+        /*! \brief constructor */
+        TreeParam() {
+            // assert compact alignment
+            static_assert(sizeof(TreeParam) == (31 + 6) * sizeof(int),
+                          "TreeParam: 64 bit align");
+            std::memset(this, 0, sizeof(TreeParam));
+            num_nodes = num_roots = 1;
+        }
+
+        void dump_tree_param() {
+            std::cout << "\t###### current tree param ######" << std::endl;
+            std::cout << "\tnum_roots: " << num_roots << std::endl;
+            std::cout << "\tnum_nodes: " << num_nodes << std::endl;
+            std::cout << "\tnum_deleted: " << num_deleted << std::endl;
+            std::cout << "\tmax_depth: " << max_depth << std::endl;
+            std::cout << "\tnum_feature: " << num_feature << std::endl;
+            std::cout << "\tsize_leaf_vector: " << size_leaf_vector << std::endl;
+        }
+    };
+
+/*!
+ * \brief template class of TreeModel
+ * \tparam TSplitCond data type to indicate split condition
+ * \tparam TNodeStat auxiliary statistics of node to help tree building
+ */
+    template<typename TSplitCond, typename TNodeStat>
+    class TreeModel {
+    public:
+        /*! \brief data type to indicate split condition */
+        typedef TNodeStat NodeStat;
+        /*! \brief auxiliary statistics of node to help tree building */
+        typedef TSplitCond SplitCond;
+
+        /*! \brief tree node */
+        class Node {
+        public:
+            Node() : sindex_(0) {
+                // assert compact alignment
+                static_assert(sizeof(Node) == 4 * sizeof(int) + sizeof(Info),
+                              "Node: 64 bit align");
+            }
+
+            /*! \brief index of left child */
+            inline int cleft() const {
+                return this->cleft_;
+            }
+
+            /*! \brief index of right child */
+            inline int cright() const {
+                return this->cright_;
+            }
+
+            /*! \brief index of default child when feature is missing */
+            inline int cdefault() const {
+                return this->default_left() ? this->cleft() : this->cright();
+            }
+
+            /*! \brief feature index of split condition */
+            inline unsigned split_index() const {
+                return sindex_ & ((1U << 31) - 1U);
+            }
+
+            /*! \brief when feature is unknown, whether goes to left child */
+            inline bool default_left() const {
+                return (sindex_ >> 31) != 0;
+            }
+
+            /*! \brief whether current node is leaf node */
+            inline bool is_leaf() const {
+                return cleft_ == -1;
+            }
+
+            /*! \return get leaf value of leaf node */
+            inline bst_float leaf_value() const {
+                return (this->info_).leaf_value;
+            }
+
+            /*! \return get split condition of the node */
+            inline TSplitCond split_cond() const {
+                return (this->info_).split_cond;
+            }
+
+            /*! \brief get parent of the node */
+            inline int parent() const {
+                return parent_ & ((1U << 31) - 1);
+            }
+
+            /*! \brief whether current node is left child */
+            inline bool is_left_child() const {
+                return (parent_ & (1U << 31)) != 0;
+            }
+
+            /*! \brief whether this node is deleted */
+            inline bool is_deleted() const {
+                return sindex_ == std::numeric_limits<unsigned>::max();
+            }
+
+            /*! \brief whether current node is root */
+            inline bool is_root() const {
+                return parent_ == -1;
+            }
+
+            /*!
+             * \brief set the right child
+             * \param nid node id to right child
+             */
+            inline void set_right_child(int nid) {
+                this->cright_ = nid;
+            }
+
+            /*!
+             * \brief set split condition of current node
+             * \param split_index feature index to split
+             * \param split_cond  split condition
+             * \param default_left the default direction when feature is unknown
+             */
+            inline void set_split(unsigned split_index, TSplitCond split_cond,
+                                  bool default_left = false) {
+                if (default_left) split_index |= (1U << 31);
+                this->sindex_ = split_index;
+                (this->info_).split_cond = split_cond;
+            }
+
+            /*!
+             * \brief set the leaf value of the node
+             * \param value leaf value
+             * \param right right index, could be used to store
+             *        additional information
+             */
+            inline void set_leaf(bst_float value, int right = -1) {
+                (this->info_).leaf_value = value;
+                this->cleft_ = -1;
+                this->cright_ = right;
+            }
+
+            /*! \brief mark that this node is deleted */
+            inline void mark_delete() {
+                this->sindex_ = std::numeric_limits<unsigned>::max();
+            }
+
+            inline void dump_node() {
+                std::cout << "\t\t#### current node ####"
+                          << "\n\t\tparent: " << parent()
+                          << "\tcleft: " << cleft_
+                          << "\tcright: " << cright_
+                          << "\n\t\tsindex: " << split_index()
+                          << "\tsplit_cond: " << split_cond()
+                          << "\tleaf_value: " << leaf_value()
+                          << std::endl;
+            }
+
+        private:
+            friend class TreeModel<TSplitCond, TNodeStat>;
+
+            /*!
+             * \brief in leaf node, we have weights, in non-leaf nodes,
+             *        we have split condition
+             */
+            union Info {
+                bst_float leaf_value;
+                TSplitCond split_cond;
+            };
+            // pointer to parent, highest bit is used to
+            // indicate whether it's a left child or not
+            int parent_;
+            // pointer to left, right
+            int cleft_, cright_;
+            // split feature index, left split or right split depends on the highest bit
+            unsigned sindex_;
+            // extra info
+            Info info_;
+
+            // set parent
+            inline void set_parent(int pidx, bool is_left_child = true) {
+                if (is_left_child) pidx |= (1U << 31);
+                this->parent_ = pidx;
+            }
+        };
+
+    protected:
+        // vector of nodes
+        std::vector <Node> nodes;
+        std::vector <int> leaves;
+        // free node space, used during training process
+        std::vector<int> deleted_nodes;
+        // stats of nodes
+        std::vector <TNodeStat> stats;
+        // leaf vector, that is used to store additional information
+        std::vector <bst_float> leaf_vector;
+
+        // allocate a new node,
+        // !!!!!! NOTE: may cause BUG here, nodes.resize
+        inline int AllocNode() {
+            if (param.num_deleted != 0) {
+                int nd = deleted_nodes.back();
+                deleted_nodes.pop_back();
+                --param.num_deleted;
+                return nd;
+            }
+            int nd = param.num_nodes++;
+            CHECK_LT(param.num_nodes, std::numeric_limits<int>::max())
+                << "number of nodes in the tree exceed 2^31";
+            
+            nodes.resize(param.num_nodes);
+            stats.resize(param.num_nodes);
+            leaf_vector.resize(param.num_nodes * param.size_leaf_vector);
+            return nd;
+        }
+
+        // delete a tree node, keep the parent field to allow trace back
+        inline void DeleteNode(int nid) {
+            CHECK_GE(nid, param.num_roots);
+            deleted_nodes.push_back(nid);
+            nodes[nid].mark_delete();
+            ++param.num_deleted;
+        }
+
+    public:
+        /*!
+         * \brief change a non leaf node to a leaf node, delete its children
+         * \param rid node id of the node
+         * \param value new leaf value
+         */
+        inline void ChangeToLeaf(int rid, bst_float value) {
+            CHECK(nodes[nodes[rid].cleft()].is_leaf());
+            CHECK(nodes[nodes[rid].cright()].is_leaf());
+            this->DeleteNode(nodes[rid].cleft());
+            this->DeleteNode(nodes[rid].cright());
+            nodes[rid].set_leaf(value);
+        }
+
+        /*!
+         * \brief collapse a non leaf node to a leaf node, delete its children
+         * \param rid node id of the node
+         * \param value new leaf value
+         */
+        inline void CollapseToLeaf(int rid, bst_float value) {
+            if (nodes[rid].is_leaf()) return;
+            if (!nodes[nodes[rid].cleft()].is_leaf()) {
+                CollapseToLeaf(nodes[rid].cleft(), 0.0f);
+            }
+            if (!nodes[nodes[rid].cright()].is_leaf()) {
+                CollapseToLeaf(nodes[rid].cright(), 0.0f);
+            }
+            this->ChangeToLeaf(rid, value);
+        }
+
+    public:
+        /*! \brief model parameter */
+        TreeParam param;
+
+        /*! \brief constructor */
+        TreeModel() {
+            param.num_nodes = 1;
+            param.num_roots = 1;
+            param.num_deleted = 0;
+            nodes.resize(1);
+            leaves.resize(2, -1);
+        }
+
+        /*! \brief get node given nid */
+        inline Node &operator[](int nid) {
+            return nodes[nid];
+        }
+
+        /*! \brief get node given nid */
+        inline const Node &operator[](int nid) const {
+            return nodes[nid];
+        }
+
+        /*! \brief get const reference to nodes */
+        inline const std::vector <Node> &GetNodes() const { return nodes; }
+
+        /*! \brief get node statistics given nid */
+        inline NodeStat &stat(int nid) {
+            return stats[nid];
+        }
+
+        /*! \brief get node statistics given nid */
+        inline const NodeStat &stat(int nid) const {
+            return stats[nid];
+        }
+
+        /*! \brief get leaf vector given nid */
+        inline bst_float *leafvec(int nid) {
+            if (leaf_vector.size() == 0) return nullptr;
+            return &leaf_vector[nid * param.size_leaf_vector];
+        }
+
+        /*! \brief get leaf vector given nid */
+        inline const bst_float *leafvec(int nid) const {
+            if (leaf_vector.size() == 0) return nullptr;
+            return &leaf_vector[nid * param.size_leaf_vector];
+        }
+
+        /*! \brief initialize the model */
+        inline void InitModel() {
+            param.num_nodes = param.num_roots;
+            nodes.resize(param.num_nodes);
+            stats.resize(param.num_nodes);
+            leaves.resize(param.num_nodes+1, -1);
+            leaf_vector.resize(param.num_nodes * param.size_leaf_vector, 0.0f);
+            for (int i = 0; i < param.num_nodes; i++) {
+                nodes[i].set_leaf(0.0f);
+                nodes[i].set_parent(-1);
+            }
+        }
+
+        /*!
+         * \brief load model from stream
+         * \param fi input stream
+         */
+        inline void Load(std::ifstream& ifile) {
+            ifile.read((char*)&param, sizeof(TreeParam));
+            nodes.resize(param.num_nodes);
+            stats.resize(param.num_nodes);
+
+            ifile.read((char*)&nodes[0], sizeof(Node) * nodes.size());
+            ifile.read((char*)&stats[0], sizeof(NodeStat) * stats.size());
+            
+            if (param.size_leaf_vector != 0) {
+                ifile.read((char*)&leaf_vector[0], param.num_nodes * param.size_leaf_vector);
+            }
+
+            // chg deleted nodes
+            deleted_nodes.resize(0);
+            for (int i = param.num_roots; i < param.num_nodes; ++i) {
+                // nodes[i].dump_node();
+                if (nodes[i].is_deleted()) deleted_nodes.push_back(i);
+            }
+                
+            UpdateLeavesPos();
+            // param.dump_tree_param();
+            CHECK_EQ(static_cast<int>(deleted_nodes.size()), param.num_deleted);
+        }
+
+        inline void UpdateLeavesPos() {
+            int index2code = 0;
+            leaves.resize(param.num_nodes+1, -1);
+            for (int i = param.num_roots; i < param.num_nodes; ++i) {
+                if (nodes[i].is_leaf()) leaves[i] = index2code++;
+            }
+            leaves[param.num_nodes] = index2code;
+        }
+
+        /*!
+         * \brief add child nodes to node
+         * \param nid node id to add children to
+         */
+        inline void AddChilds(int nid) {
+            int pleft = this->AllocNode();
+            int pright = this->AllocNode();
+            nodes[nid].cleft_ = pleft;
+            nodes[nid].cright_ = pright;
+            nodes[nodes[nid].cleft()].set_parent(nid, true);
+            nodes[nodes[nid].cright()].set_parent(nid, false);
+        }
+
+        /*!
+         * \brief only add a right child to a leaf node
+         * \param nid node id to add right child
+         */
+        inline void AddRightChild(int nid) {
+            int pright = this->AllocNode();
+            nodes[nid].right = pright;
+            nodes[nodes[nid].right].set_parent(nid, false);
+        }
+
+        /*!
+         * \brief get current depth
+         * \param nid node id
+         * \param pass_rchild whether right child is not counted in depth
+         */
+        inline int GetDepth(int nid, bool pass_rchild = false) const {
+            int depth = 0;
+            while (!nodes[nid].is_root()) {
+                if (!pass_rchild || nodes[nid].is_left_child()) ++depth;
+                nid = nodes[nid].parent();
+            }
+            return depth;
+        }
+
+        /*!
+         * \brief get maximum depth
+         * \param nid node id
+         */
+        inline int MaxDepth(int nid) const {
+            if (nodes[nid].is_leaf()) return 0;
+            return std::max(MaxDepth(nodes[nid].cleft()) + 1,
+                            MaxDepth(nodes[nid].cright()) + 1);
+        }
+
+        /*!
+         * \brief get maximum depth
+         */
+        inline int MaxDepth() {
+            int maxd = 0;
+            for (int i = 0; i < param.num_roots; ++i) {
+                maxd = std::max(maxd, MaxDepth(i));
+            }
+            return maxd;
+        }
+
+        /*! \brief number of extra nodes besides the root */
+        inline int num_extra_nodes() const {
+            return param.num_nodes - param.num_roots - param.num_deleted;
+        }
+    };
+
+/*! \brief node statistics used in regression tree */
+    struct RTreeNodeStat {
+        /*! \brief loss change caused by current split */
+        bst_float loss_chg;
+        /*! \brief sum of hessian values, used to measure coverage of data */
+        bst_float sum_hess;
+        /*! \brief weight of current node */
+        bst_float base_weight;
+        /*! \brief number of child that is leaf node known up to now */
+        int leaf_child_cnt;
+    };
+
+/*!
+ * \brief define regression tree to be the most common tree model.
+ *  This is the data structure used in xgboost's major tree models.
+ */
+    class RegTree : public TreeModel<bst_float, RTreeNodeStat> {
+    public:
+        /*!
+         * \brief get the leaf index
+         * \param feat dense feature vector, if the feature is missing the field is set to NaN
+         * \param root_id starting root index of the instance
+         * \return the leaf index of the given feature
+         */
+        inline int GetLeafIndex(const FVec &feat, unsigned root_id = 0) const;
+
+        /*!
+         * \brief get pair(leaf_index, leaf_nums)
+         * \param feat dense feature vector, if the feature is missing the field is set to NaN
+         * \param root_id starting root index of the instance
+         * \return the true index of leaf for onehot
+         */
+        inline pii GetLeaf1HotEncode(const FVec &feat, unsigned root_id = 0) const;
+        /*!
+         * \brief get the prediction of regression tree, only accepts dense feature vector
+         * \param feat dense feature vector, if the feature is missing the field is set to NaN
+         * \param root_id starting root index of the instance
+         * \return the leaf index of the given feature
+         */
+        inline bst_float Predict(const FVec &feat, unsigned root_id = 0) const;
+
+
+        /*!
+         * \brief get next position of the tree given current pid
+         * \param pid Current node id.
+         * \param fvalue feature value if not missing.
+         * \param is_unknown Whether current required feature is missing.
+         */
+        inline int GetNext(int pid, bst_float fvalue, bool is_unknown) const;
+
+        /*!
+         * \brief calculate the mean value for each node, required for feature contributions
+         */
+        inline void FillNodeMeanValues();
+
+    private:
+        inline bst_float FillNodeMeanValue(int nid);
+
+        std::vector <bst_float> node_mean_values;
+    };
+
+// implementations of inline functions
+// do not need to read if only use the model
+
+    inline int RegTree::GetLeafIndex(const FVec &feat, unsigned root_id) const {
+        int pid = static_cast<int>(root_id);
+        while (!(*this)[pid].is_leaf()) {
+            // std::cout << "curr node:" << pid << ", " ;
+            unsigned split_index = (*this)[pid].split_index();
+            pid = this->GetNext(pid, feat.fvalue(split_index), feat.is_missing(split_index));
+            // std::cout << "split_index:" << split_index << ", split_val:" << feat.fvalue(split_index) << ", feat_is_miss:" << feat.is_missing(split_index) << ", next node:" << pid << std::endl;
+        }
+        return pid;
+    }
+
+    inline pii RegTree::GetLeaf1HotEncode(const FVec &feat, unsigned root_id) const {
+        std::pair<int, int> onehot;
+        int pid = this->GetLeafIndex(feat, root_id);
+        // std::cout << "pid:" << pid << ", leaf val:" << (*this)[pid].leaf_value() << ", leaf index:" << leaves[pid] << ", leaves num:" << leaves[param.num_nodes] << std::endl;
+        return pii(leaves[pid], leaves[param.num_nodes]);
+    }
+
+    inline bst_float RegTree::Predict(const FVec &feat, unsigned root_id) const {
+        int pid = this->GetLeafIndex(feat, root_id);
+        // std::cout << "predict# pid:" << pid << ", leaf val:" << (*this)[pid].leaf_value() << std::endl;
+        return (*this)[pid].leaf_value();
+    }
+
+    inline void RegTree::FillNodeMeanValues() {
+        size_t num_nodes = this->param.num_nodes;
+        if (this->node_mean_values.size() == num_nodes) {
+            return;
+        }
+        this->node_mean_values.resize(num_nodes);
+        for (int root_id = 0; root_id < param.num_roots; ++root_id) {
+            this->FillNodeMeanValue(root_id);
+        }
+    }
+
+    inline bst_float RegTree::FillNodeMeanValue(int nid) {
+        bst_float result;
+        auto &node = (*this)[nid];
+        if (node.is_leaf()) {
+            result = node.leaf_value();
+        } else {
+            result = this->FillNodeMeanValue(node.cleft()) * this->stat(node.cleft()).sum_hess;
+            result += this->FillNodeMeanValue(node.cright()) * this->stat(node.cright()).sum_hess;
+            result /= this->stat(nid).sum_hess;
+        }
+        this->node_mean_values[nid] = result;
+        return result;
+    }
+
+
+/*! \brief get next position of the tree given current pid */
+    inline int RegTree::GetNext(int pid, bst_float fvalue, bool is_unknown) const {
+        bst_float split_value = (*this)[pid].split_cond();
+        if (is_unknown) {
+            return (*this)[pid].cdefault();
+        } else {
+            if (fvalue < split_value) {
+                return (*this)[pid].cleft();
+            } else {
+                return (*this)[pid].cright();
+            }
+        }
+    }
+}  // namespace xgboost
+#endif  // XGBOOST_TREE_MODEL_H_

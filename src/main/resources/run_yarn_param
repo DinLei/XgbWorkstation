@@ -1,0 +1,53 @@
+rank.xgb4j.training.XgbLrTraining
+
+# xgb+lr 训练
+
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-714]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200715/instance/part-00[180-199]
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_001
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_001
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_001.log
+20,100,5,1,1,5,1,1,0,0.1
+
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[705-708]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200709/instance
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_002
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_002
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_002.log
+100,3,10
+
+# only xgb
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-715]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200716/instance
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_001
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_001.log
+80,20,8,0.8,0.8,2,1,1,0,0.1,0.2
+
+# 标准样本测试
+# xgb+lr
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/example/agaricus.txt.train
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/example/agaricus.txt.test
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_example
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_example
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/test.log
+5,5,3,1,1,1,1,1,0,0.3
+
+# only xgb
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/example/agaricus.txt.train
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/example/agaricus.txt.test
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_example
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/test.log
+5,5,3,1,1,1,1,1,0,0.3
+
+# LR测试
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-717]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_003
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_003.log
+1000,0.3,0.2
+
+rank.xgb4j.training.BaseLrTraining
+rank.xgb4j.training.BaseXgbTraining
+=================
+
+ocpx.etl_jobs.XgbBaseFeatures
+${statis_date} 0111
