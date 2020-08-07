@@ -9,6 +9,9 @@ import org.apache.spark.sql.{Column, DataFrame, Row}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StringType
 import rank.xgb4s.util.SparkUtil4s
+import rank.xgb4s.util.metrics.{MetricsFun4spark, NormalizedEntropy}
+
+import scala.collection.mutable
 
 object XgbLrTraining {
   val spark = SparkUtil4s.getSparkSession("xgb_lr")
@@ -40,36 +43,17 @@ object XgbLrTraining {
     val tLogPath = args(4)
     var learningLog: String = "Training&Eval-Logs:\n"
 
-    // xgboost的训练参数
-    var treeNum = 100
-    var treeMaxDepth = 3
-    var treeMaxLeaves = 10
-    var nWorks = 10
-    if( args.length > 5) {
-      val params: Array[String] = args(5).trim.split(",")
-      if(params.length >= 1)
-        treeNum = params(0).toInt
-      if(params.length >= 2)
-        treeMaxDepth = params(1).toInt
-      if(params.length >= 3)
-        treeMaxLeaves = params(2).toInt
-      if(params.length >= 4)
-        nWorks = params(3).toInt
-    }
-
     // 获取数据：org.apache.spark.sql.DataFrame = [label: double, features: vector] ## printSchema()
     // 构造训练集和测试集
 
     val allData: DataFrame = geneTrainingData(trainPath)
     val Array(train, eval) = allData.randomSplit(Array(0.99, 0.01), 123)
 
-    var testData: DataFrame = null
-    if(testPath.length > 1) {
-      testData = geneTrainingData(testPath)
-    }
+    val test: DataFrame = geneTrainingData(testPath)
 
     val trainInfo = train.groupBy("label").count()
     val evalInfo = eval.groupBy("label").count()
+    val testInfo = test.groupBy("label").count()
 
     learningLog += s"train example label distribution: \n"
     trainInfo.collect().foreach(
@@ -81,91 +65,105 @@ object XgbLrTraining {
       x=> learningLog += s"label: ${x.get(0)}, count: ${x.get(1)}\n"
     )
 
-    if(testData != null) {
-      val testInfo = testData.groupBy("label").count()
-      learningLog += s"test example label distribution: \n"
-      testInfo.collect().foreach(
-        x=> learningLog += s"label: ${x.get(0)}, count: ${x.get(1)}\n"
-      )
-    }
+    learningLog += s"test example label distribution: \n"
+    testInfo.collect().foreach(
+      x=> learningLog += s"label: ${x.get(0)}, count: ${x.get(1)}\n"
+    )
 
     // 获取参数配置文件，暂时不用
     //    val params = PropertiesUtil.getProperties("xgb_lr.properties")
 
+    val treeNum = 50
     val xgbParam = Map(
-      "eta" -> 0.1f,
-      "num_round" -> treeNum,
-      "max_depth" -> treeMaxDepth,
-      "max_leaf_nodes" -> treeMaxLeaves,
       "objective" -> "binary:logistic",
-      "num_workers" -> nWorks,
-//      "missing" -> -999,
-      "eval_sets" -> Map("eval" -> eval),
-      "eval_metric" -> "auc"
-//      "num_class" -> 2,
+      "num_workers" -> 80,
+      "num_round" -> treeNum,
+      "max_depth" -> 8,
+      "subsample" -> 0.8,
+      "colsample_bytree" -> 0.8,
+      "min_child_weight" -> 2,
+      "scale_pos_weight" -> 1.0,
+      "lambda" -> 1,
+      "alpha" -> 0,
+      "gamma" -> 0.2,
+      "eta" -> 0.1
+      //      "eval_metric" -> "logloss"
+      //      "num_class" -> 2,
+      //      "missing" -> -999,
     )
+
+    val watches = new mutable.HashMap[String, DataFrame]
+    watches += "eval" -> eval
 
     // xgboost 模型
     val booster = new XGBoostClassifier(xgbParam)
       .setFeaturesCol("features")
       .setLabelCol("label")
+      .setEvalSets(watches.toMap)
+      .setCustomEval(new NormalizedEntropy)
+    //      .setMaximizeEvaluationMetrics(false)
 
     val xgbModel: XGBoostClassificationModel = booster.fit(train)
 
-    // Batch prediction
-    val xgbPred = xgbModel.transform(eval)
+    /*
+    val featureScoreMap = xgbModel.nativeBooster.getFeatureScore()
+    //    xgbModel.nativeBooster.getScore("", "gain")
+    val sortedScoreMap = featureScoreMap.toSeq.sortBy(-_._2) // descending order
+    learningLog += s"\nxgboost model features importance: \n${sortedScoreMap}\n"
+    */
 
-    learningLog += s"\nxgbPred schema: \n${xgbPred.schema.treeString}\n"
-    xgbPred.head(5).foreach(
-      row => {
-        learningLog += s"${row.toString()}\n"
-      }
-    )
+    // Batch prediction
+    xgbModel.setLeafPredictionCol("predictLeaf")
+    val xgbPredTr = xgbModel.transform(train)
+    val xgbPredE = xgbModel.transform(eval)
+    val xgbPredTe = xgbModel.transform(test)
 
     // XgbModel evaluation
-    val xgbEvaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("label")
-      .setPredictionCol("prediction")
-      .setMetricName("accuracy")
-    val xgbAcc = xgbEvaluator.evaluate(xgbPred)
-
     val xgbEvaluator2 = new BinaryClassificationEvaluator()
       .setLabelCol("label")
       .setRawPredictionCol("probability")
       .setMetricName("areaUnderROC")
-    val xgbAuc = xgbEvaluator2.evaluate(xgbPred)
 
-    learningLog += s"base_xgb model in eval ::: accuracy is : ${xgbAcc}, auc is : ${xgbAuc}\n\n"
+    val xgbAucTr = xgbEvaluator2.evaluate(xgbPredTr)
+    val xgbAucE = xgbEvaluator2.evaluate(xgbPredE)
+    val xgbAucTe = xgbEvaluator2.evaluate(xgbPredTe)
 
-    if(testData != null) {
-      val xgbPredT = xgbModel.transform(testData)
-      val xgbEvaluator2T = new BinaryClassificationEvaluator()
-        .setLabelCol("label")
-        .setRawPredictionCol("probability")
-        .setMetricName("areaUnderROC")
-      val xgbAucT = xgbEvaluator2T.evaluate(xgbPredT)
+    val xgbNeTr = MetricsFun4spark.normalizedEntropy(xgbPredTr, "label", "probability")
+    val xgbNeE = MetricsFun4spark.normalizedEntropy(xgbPredE, "label", "probability")
+    val xgbNeTe = MetricsFun4spark.normalizedEntropy(xgbPredTe, "label", "probability")
 
-      learningLog += s"base_xgb model in test ::: auc is : ${xgbAucT}\n\n"
-    }
+    val xgbCaTr = MetricsFun4spark.calibration(xgbPredTr, "label", "probability")
+    val xgbCaE = MetricsFun4spark.calibration(xgbPredE, "label", "probability")
+    val xgbCaTe = MetricsFun4spark.calibration(xgbPredTe, "label", "probability")
+
+    val xgbLlsTr = MetricsFun4spark.logLoss(xgbPredTr, "label", "probability")
+    val xgbLlsE = MetricsFun4spark.logLoss(xgbPredE, "label", "probability")
+    val xgbLlsTe = MetricsFun4spark.logLoss(xgbPredTe, "label", "probability")
+
+    learningLog += s"\nxgboost in train: auc = ${xgbAucTr} , ne = ${xgbNeTr} , calibration = ${xgbCaTr} , logloss = ${xgbLlsTr}\n"
+    learningLog += s"\nxgboost in eval:  auc = ${xgbAucE} , ne = ${xgbNeE} , calibration = ${xgbCaE} , logloss = ${xgbLlsE}\n"
+    learningLog += s"\nxgboost in test:  auc = ${xgbAucTe} , ne = ${xgbNeTe} , calibration = ${xgbCaTe} , logloss = ${xgbLlsTe}\n"
+
+    learningLog += s"\nXGBoostClassificationModel summary: ${xgbModel.summary}\n\n"
 
     //存储二进制模型文件
     //    booster.write.overwrite().save(xgbModelPath)
     xgbModel.nativeBooster.saveModel(xgbModelPath)
+    SparkUtil4s.write2hdfs(tLogPath, learningLog)
 
     // 获取预测叶子索引
-    xgbModel.setLeafPredictionCol("predictLeaf")
-    val xgbTrainDF = xgbModel.transform(train)
-    val xgbEvalDF = xgbModel.transform(eval)
 
-    assert(xgbTrainDF.columns.contains("predictLeaf"))
-    assert(xgbEvalDF.columns.contains("predictLeaf"))
-
-    val labelWithLeavesTrainDF = xgbTrainDF.select(
+    val labelWithLeavesTrainDF = xgbPredTr.select(
       col("label") +: col("features") +:
         (0 until treeNum).map(i => col("predictLeaf").getItem(i).as(s"leaf_$i").cast(StringType)): _* // 变长参数
     )
 
-    val labelWithLeavesEvalDF = xgbEvalDF.select(
+    val labelWithLeavesEvalDF = xgbPredE.select(
+      col("label") +: col("features") +:
+        (0 until treeNum).map(i => col("predictLeaf").getItem(i).as(s"leaf_$i").cast(StringType)): _* // 变长参数
+    )
+
+    val labelWithLeavesTestDF = xgbPredTe.select(
       col("label") +: col("features") +:
         (0 until treeNum).map(i => col("predictLeaf").getItem(i).as(s"leaf_$i").cast(StringType)): _* // 变长参数
     )
@@ -180,6 +178,7 @@ object XgbLrTraining {
 
     val labelWithLeavesTrainDF1 = leafIndexersPipe.transform(labelWithLeavesTrainDF)
     val labelWithLeavesEvalDF1 = leafIndexersPipe.transform(labelWithLeavesEvalDF)
+    val labelWithLeavesTestDF1 = leafIndexersPipe.transform(labelWithLeavesTestDF)
 
     learningLog += s"\nlabelWithLeavesTrainDF schema: \n${labelWithLeavesTrainDF1.schema.treeString}\n"
     learningLog += s"\nlabelWithLeavesTrainDF: \n${labelWithLeavesTrainDF1.head().toString()}\n"
@@ -195,6 +194,7 @@ object XgbLrTraining {
     val mapModel = encoder.fit(labelWithLeavesTrainDF1)
     val transformedTrainDF = mapModel.transform(labelWithLeavesTrainDF1)
     val transformedEvalDF = mapModel.transform(labelWithLeavesEvalDF1)
+    val transformedTestDF = mapModel.transform(labelWithLeavesTestDF1)
 
     learningLog += s"\ntransformedTrainDF schema: \n${transformedTrainDF.schema.treeString}\n"
     learningLog += s"\ntransformedTrainDF: \n${transformedTrainDF.head().toString()}\n"
@@ -209,6 +209,8 @@ object XgbLrTraining {
     val lrTrainInput = vectorAssembler.transform(transformedTrainDF)
       .select("lrFeatures", "label")
     val lrEvalInput = vectorAssembler.transform(transformedEvalDF)
+      .select("lrFeatures", "label")
+    val lrTestInput = vectorAssembler.transform(transformedTestDF)
       .select("lrFeatures", "label")
 
     learningLog += s"\nlrTrainInput schema: \n${lrTrainInput.schema.treeString}\n"
@@ -235,18 +237,30 @@ object XgbLrTraining {
       .setLabelCol("label")
 
     // 预测逻辑回归的值
-    val lrPred = lrModel.transform(lrEvalInput)
+    val lrPredTr = lrModel.transform(lrTrainInput)
+    val lrPredE = lrModel.transform(lrEvalInput)
+    val lrPredTe = lrModel.transform(lrTestInput)
 
     // 评估模型指标之AUC
-    val lrAUC = lrEvaluator.evaluate(lrPred)
+    val lrAUCTr = lrEvaluator.evaluate(lrPredTr)
+    val lrAUCE = lrEvaluator.evaluate(lrPredE)
+    val lrAUCTe = lrEvaluator.evaluate(lrPredTe)
 
-    // 评估模型指标之ACC
-    val lrEvaluator2 = new MulticlassClassificationEvaluator()
-      .setMetricName("accuracy")
-      .setLabelCol("label")
-    val lrACC = lrEvaluator2.evaluate(lrPred)
+    val lrNeTr = MetricsFun4spark.normalizedEntropy(lrPredTr, "label", "probability")
+    val lrNeE = MetricsFun4spark.normalizedEntropy(lrPredE, "label", "probability")
+    val lrNeTe = MetricsFun4spark.normalizedEntropy(lrPredTe, "label", "probability")
 
-    learningLog += s"\nbase_lr model ::: acc: ${lrACC}, auc: ${lrAUC}\n\n"
+    val lrCaTr = MetricsFun4spark.calibration(lrPredTr, "label", "probability")
+    val lrCaE = MetricsFun4spark.calibration(lrPredE, "label", "probability")
+    val lrCaTe = MetricsFun4spark.calibration(lrPredTe, "label", "probability")
+
+    val lrLlsTr = MetricsFun4spark.logLoss(lrPredTr, "label", "probability")
+    val lrLlsE = MetricsFun4spark.logLoss(lrPredE, "label", "probability")
+    val lrLlsTe = MetricsFun4spark.logLoss(lrPredTe, "label", "probability")
+
+    learningLog += s"\nxgboost in train: auc = ${lrAUCTr} , ne = ${lrNeTr} , calibration = ${lrCaTr} , logloss = ${lrLlsTr}\n"
+    learningLog += s"\nxgboost in eval:  auc = ${lrAUCE} , ne = ${lrNeE} , calibration = ${lrCaE} , logloss = ${lrLlsE}\n"
+    learningLog += s"\nxgboost in test:  auc = ${lrAUCTe} , ne = ${lrNeTe} , calibration = ${lrCaTe} , logloss = ${lrLlsTe}\n"
 
     SparkUtil4s.saveLrModel(lrModel, lrModelPath)
     SparkUtil4s.write2hdfs(tLogPath, learningLog)

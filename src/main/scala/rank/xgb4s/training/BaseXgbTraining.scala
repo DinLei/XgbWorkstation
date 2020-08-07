@@ -40,10 +40,10 @@ object BaseXgbTraining {
 
     // xgboost的训练参数
     var nWorks = 10
-    var treeNum = 100
+    var treeNum = 50
     var treeMaxDepth = 3
-    var subSample = 0.8
-    var colSample = 0.8
+    var subSample = 1.0
+    var colSample = 1.0
     var minChildWeight = 1.0
     var scalePosWeight = 1.0
     var lambda = 1
