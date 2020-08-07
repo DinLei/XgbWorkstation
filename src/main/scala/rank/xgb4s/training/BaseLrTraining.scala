@@ -15,10 +15,10 @@ object BaseLrTraining {
     var data: DataFrame = spark.read.format("libsvm").load(pathList(0))
 
     for (i <- 1 until pathList.length) {
-      data = data.union(spark.read.format("libsvm").load(pathList(i))).distinct()
+      data = data.union(spark.read.format("libsvm").load(pathList(i)))
     }
 
-    data.distinct()
+    data
   }
 
   def main(args: Array[String]): Unit = {

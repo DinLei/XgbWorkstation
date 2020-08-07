@@ -3,8 +3,8 @@ package rank.xgb4s.training
 import ml.dmlc.xgboost4j.scala.spark.{XGBoostClassificationModel, XGBoostClassifier}
 import org.apache.spark.ml.evaluation.{BinaryClassificationEvaluator, MulticlassClassificationEvaluator}
 import org.apache.spark.sql.DataFrame
-import rank.xgb4s.util.SparkUtil4s
-import rank.xgb4s.util.metrics.{NormalizedEntropy, Calibration}
+import rank.xgb4s.util.{SparkUtil4s, XgbUtils}
+import rank.xgb4s.util.metrics.{Calibration, NormalizedEntropy}
 import rank.xgb4s.util.metrics.MetricsFun4spark
 
 import scala.collection.mutable
@@ -39,33 +39,26 @@ object BaseXgbTraining {
     var learningLog: String = "Training&Eval-Logs:\n"
 
     // xgboost的训练参数
-    var nWorks = 10
-    var treeNum = 50
-    var treeMaxDepth = 3
-    var subSample = 1.0
-    var colSample = 1.0
-    var minChildWeight = 1.0
-    var scalePosWeight = 1.0
-    var lambda = 1
-    var alpha = 0
-    var eta = 0.1
-    var gamma = 0.2
+    var xgbParam = Map(
+      "objective" -> "binary:logistic",
+      "num_workers" -> 80,
+      "num_round" -> 100,
+      "max_depth" -> 8,
+      "subsample" -> 0.8,
+      "colsample_bytree" -> 0.8,
+      "min_child_weight" -> 2,
+      "scale_pos_weight" -> 1,
+      "lambda" -> 1,
+      "alpha" -> 0,
+      "gamma" -> 0.2,
+      "eta" -> 0.1
+      //      "eval_metric" -> "logloss"
+      //      "num_class" -> 2,
+      //      "missing" -> -999,
+    )
 
     if( args.length > 4) {
-      val params: Array[String] = args(4).trim.split(",")
-      if(params.length >= 11) {
-        nWorks = params(0).toInt
-        treeNum = params(1).toInt
-        treeMaxDepth = params(2).toInt
-        subSample = params(3).toFloat
-        colSample = params(4).toFloat
-        minChildWeight = params(5).toInt
-        scalePosWeight = params(6).toFloat
-        lambda = params(7).toInt
-        alpha = params(8).toInt
-        eta = params(9).toFloat
-        gamma = params(10).toFloat
-      }
+      xgbParam = xgbParam ++ XgbUtils.paramsParse(args(4))
     }
 
     // 获取数据：org.apache.spark.sql.DataFrame = [label: double, features: vector] ## printSchema()
@@ -97,24 +90,6 @@ object BaseXgbTraining {
     // 获取参数配置文件，暂时不用
     //    val params = PropertiesUtil.getProperties("xgb_lr.properties")
 
-    val xgbParam = Map(
-      "objective" -> "binary:logistic",
-      "num_workers" -> nWorks,
-      "num_round" -> treeNum,
-      "max_depth" -> treeMaxDepth,
-      "subsample" -> subSample,
-      "colsample_bytree" -> colSample,
-      "min_child_weight" -> minChildWeight,
-      "scale_pos_weight" -> scalePosWeight,
-      "lambda" -> lambda,
-      "alpha" -> alpha,
-      "gamma" -> gamma,
-      "eta" -> eta
-//      "eval_metric" -> "logloss"
-//      "num_class" -> 2,
-//      "missing" -> -999,
-    )
-
     val watches = new mutable.HashMap[String, DataFrame]
 //    watches += "train" -> train
     watches += "eval" -> eval
@@ -143,7 +118,7 @@ object BaseXgbTraining {
     val xgbPredTe = xgbModel.transform(test)
 
     learningLog += s"\nxgbPred schema: \n${xgbPredTe.schema.treeString}\n"
-    xgbPredE.head(2).foreach(
+    xgbPredTe.head(2).foreach(
       row => {
         learningLog += s"${row.toString()}\n"
       }

@@ -8,7 +8,7 @@ import org.apache.spark.ml.feature.{OneHotEncoderEstimator, StringIndexer, Vecto
 import org.apache.spark.sql.{Column, DataFrame, Row}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.StringType
-import rank.xgb4s.util.SparkUtil4s
+import rank.xgb4s.util.{SparkUtil4s, XgbUtils}
 import rank.xgb4s.util.metrics.{MetricsFun4spark, NormalizedEntropy}
 
 import scala.collection.mutable
@@ -23,10 +23,10 @@ object XgbLrTraining {
     var data: DataFrame = spark.read.format("libsvm").load(pathList(0))
 
     for (i <- 1 until pathList.length) {
-      data = data.union(spark.read.format("libsvm").load(pathList(i))).distinct()
+      data = data.union(spark.read.format("libsvm").load(pathList(i)))
     }
 
-    data.distinct()
+    data
   }
 
   def main(args: Array[String]): Unit = {
@@ -43,12 +43,40 @@ object XgbLrTraining {
     val tLogPath = args(4)
     var learningLog: String = "Training&Eval-Logs:\n"
 
+    // xgboost的参数
+    val treeNum = 100
+    var xgbParam = Map(
+      "objective" -> "binary:logistic",
+      "num_workers" -> 100,
+      "num_round" -> treeNum,
+      "max_depth" -> 8,
+      "subsample" -> 0.8,
+      "colsample_bytree" -> 0.8,
+      "min_child_weight" -> 2,
+      "scale_pos_weight" -> 1.0,
+      "lambda" -> 1,
+      "alpha" -> 0,
+      "gamma" -> 0.2,
+      "eta" -> 0.1
+    )
+    var iterNum = 100
+    var regParam = 0.3
+    var elasticNetParam = 0.2
+
+    if(args.length > 5) {
+      xgbParam = xgbParam ++ XgbUtils.paramsParse(args(5))
+    }
+    if(args.length > 6) {
+      val params: Array[String] = args(3).trim.split(",")
+      iterNum = params(0).toInt
+      regParam = params(1).toFloat
+      elasticNetParam = params(2).toFloat
+    }
     // 获取数据：org.apache.spark.sql.DataFrame = [label: double, features: vector] ## printSchema()
     // 构造训练集和测试集
 
     val allData: DataFrame = geneTrainingData(trainPath)
     val Array(train, eval) = allData.randomSplit(Array(0.99, 0.01), 123)
-
     val test: DataFrame = geneTrainingData(testPath)
 
     val trainInfo = train.groupBy("label").count()
@@ -73,25 +101,6 @@ object XgbLrTraining {
     // 获取参数配置文件，暂时不用
     //    val params = PropertiesUtil.getProperties("xgb_lr.properties")
 
-    val treeNum = 50
-    val xgbParam = Map(
-      "objective" -> "binary:logistic",
-      "num_workers" -> 80,
-      "num_round" -> treeNum,
-      "max_depth" -> 8,
-      "subsample" -> 0.8,
-      "colsample_bytree" -> 0.8,
-      "min_child_weight" -> 2,
-      "scale_pos_weight" -> 1.0,
-      "lambda" -> 1,
-      "alpha" -> 0,
-      "gamma" -> 0.2,
-      "eta" -> 0.1
-      //      "eval_metric" -> "logloss"
-      //      "num_class" -> 2,
-      //      "missing" -> -999,
-    )
-
     val watches = new mutable.HashMap[String, DataFrame]
     watches += "eval" -> eval
 
@@ -104,13 +113,6 @@ object XgbLrTraining {
     //      .setMaximizeEvaluationMetrics(false)
 
     val xgbModel: XGBoostClassificationModel = booster.fit(train)
-
-    /*
-    val featureScoreMap = xgbModel.nativeBooster.getFeatureScore()
-    //    xgbModel.nativeBooster.getScore("", "gain")
-    val sortedScoreMap = featureScoreMap.toSeq.sortBy(-_._2) // descending order
-    learningLog += s"\nxgboost model features importance: \n${sortedScoreMap}\n"
-    */
 
     // Batch prediction
     xgbModel.setLeafPredictionCol("predictLeaf")
@@ -141,7 +143,7 @@ object XgbLrTraining {
     val xgbLlsTe = MetricsFun4spark.logLoss(xgbPredTe, "label", "probability")
 
     learningLog += s"\nxgboost in train: auc = ${xgbAucTr} , ne = ${xgbNeTr} , calibration = ${xgbCaTr} , logloss = ${xgbLlsTr}\n"
-    learningLog += s"\nxgboost in eval:  auc = ${xgbAucE} , ne = ${xgbNeE} , calibration = ${xgbCaE} , logloss = ${xgbLlsE}\n"
+    learningLog += s"\nxgboost in eval:  auc = ${xgbAucE} ,  ne = ${xgbNeE} ,  calibration = ${xgbCaE} ,  logloss = ${xgbLlsE}\n"
     learningLog += s"\nxgboost in test:  auc = ${xgbAucTe} , ne = ${xgbNeTe} , calibration = ${xgbCaTe} , logloss = ${xgbLlsTe}\n"
 
     learningLog += s"\nXGBoostClassificationModel summary: ${xgbModel.summary}\n\n"
@@ -152,7 +154,6 @@ object XgbLrTraining {
     SparkUtil4s.write2hdfs(tLogPath, learningLog)
 
     // 获取预测叶子索引
-
     val labelWithLeavesTrainDF = xgbPredTr.select(
       col("label") +: col("features") +:
         (0 until treeNum).map(i => col("predictLeaf").getItem(i).as(s"leaf_$i").cast(StringType)): _* // 变长参数
@@ -220,9 +221,9 @@ object XgbLrTraining {
 
     // LR 模型
     val lr: LogisticRegression = new LogisticRegression()
-      .setMaxIter(500)
-      .setRegParam(0.3)
-      .setElasticNetParam(0.2)
+      .setMaxIter(iterNum)
+      .setRegParam(regParam)
+      .setElasticNetParam(elasticNetParam)
       .setFeaturesCol("lrFeatures")
       .setLabelCol("label")
 
@@ -258,9 +259,9 @@ object XgbLrTraining {
     val lrLlsE = MetricsFun4spark.logLoss(lrPredE, "label", "probability")
     val lrLlsTe = MetricsFun4spark.logLoss(lrPredTe, "label", "probability")
 
-    learningLog += s"\nxgboost in train: auc = ${lrAUCTr} , ne = ${lrNeTr} , calibration = ${lrCaTr} , logloss = ${lrLlsTr}\n"
-    learningLog += s"\nxgboost in eval:  auc = ${lrAUCE} , ne = ${lrNeE} , calibration = ${lrCaE} , logloss = ${lrLlsE}\n"
-    learningLog += s"\nxgboost in test:  auc = ${lrAUCTe} , ne = ${lrNeTe} , calibration = ${lrCaTe} , logloss = ${lrLlsTe}\n"
+    learningLog += s"\nlr in train: auc = ${lrAUCTr} , ne = ${lrNeTr} , calibration = ${lrCaTr} , logloss = ${lrLlsTr}\n"
+    learningLog += s"\nlr in eval:  auc = ${lrAUCE} ,  ne = ${lrNeE} ,  calibration = ${lrCaE} ,  logloss = ${lrLlsE}\n"
+    learningLog += s"\nlr in test:  auc = ${lrAUCTe} , ne = ${lrNeTe} , calibration = ${lrCaTe} , logloss = ${lrLlsTe}\n"
 
     SparkUtil4s.saveLrModel(lrModel, lrModelPath)
     SparkUtil4s.write2hdfs(tLogPath, learningLog)

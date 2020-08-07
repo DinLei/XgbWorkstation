@@ -1,27 +1,28 @@
-rank.xgb4j.training.XgbLrTraining
+
 
 # xgb+lr 训练
-
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-714]/instance
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200715/instance/part-00[180-199]
-hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_001
-hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_001
-hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_001.log
-20,100,5,1,1,5,1,1,0,0.1
-
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[705-708]/instance
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200709/instance
+# rank.xgb4s.training.XgbLrTraining
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-715]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200716/instance
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_002
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_002
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_002.log
-100,3,10
+num_workers:100,num_round:100,max_depth:8,subsample:0.8,colsample_bytree:0.8,min_child_weight:2,scale_pos_weight:1,lambda:1,alpha:0,gamma:0.2,eta:0.1
+500,0.3,0.2
 
 # only xgb
+# rank.xgb4s.training.BaseXgbTraining
 hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-715]/instance
 hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200716/instance
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_001
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_001.log
-80,20,8,0.8,0.8,2,1,1,0,0.1,0.2
+num_workers:100,num_round:200,max_depth:8,subsample:0.8,colsample_bytree:0.8,min_child_weight:2,scale_pos_weight:1,lambda:1,alpha:0,gamma:0.2,eta:0.1
+
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[801-804]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200805/instance
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_003
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_003.log
+8num_workers:80,num_round:100,max_depth:8,subsample:0.8,colsample_bytree:0.8,min_child_weight:2,scale_pos_weight:1,lambda:1,alpha:0,gamma:0.2,eta:0.1
 
 # 标准样本测试
 # xgb+lr
@@ -45,8 +46,8 @@ hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/lr_003
 hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_003.log
 1000,0.3,0.2
 
-rank.xgb4j.training.BaseLrTraining
-rank.xgb4j.training.BaseXgbTraining
+rank.xgb4s.training.BaseLrTraining
+
 =================
 
 ocpx.etl_jobs.XgbBaseFeatures
