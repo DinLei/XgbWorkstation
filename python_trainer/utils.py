@@ -113,13 +113,17 @@ def get_features_importance(model, fmap="", importance_type='weight', output="")
     importance = sorted(importance.items(), key=lambda x: x[1], reverse=True)
     num = 1
     if output:
-        with open(output, "w") as fout:
-            fout.write("feature_name\timportance\torder\n")
+        with open(output, "w", encoding="utf8") as fout:
+            fout.write("feature_name,importance,order\n")
             for x in importance:
-                fout.write("{}\t{}\t{}\n".format(x[0], x[1], num))
+                fout.write("{},{},{}\n".format(x[0], x[1], num))
                 num += 1
-
-    print(importance)
+    # else:
+    #     from xgboost import plot_importance
+    #     from matplotlib import pyplot
+    #     plot_importance(booster)
+    #     pyplot.show()
+    #     print(importance)
 
 
 if __name__ == "__main__":
@@ -132,7 +136,8 @@ if __name__ == "__main__":
     #     "../models/dinglei_features_map.txt")
 
     get_features_importance(
-        "../models/xgb_001",
-        "../models/dinglei_features_map.txt"
+        model="../models/xgb_001",
+        fmap="../models/dinglei_features_map.txt",
+        output="../models/dinglei_importance.csv"
     )
     # ibsvm_check("../data/xfea/train/15-part-00190")

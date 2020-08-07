@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing.data import OneHotEncoder
 
-from utils import print_example4cpp
+from trainer.utils import print_example4cpp
 
 
 def xgboost_lr_train(libsvmTrain, libsvmTest):

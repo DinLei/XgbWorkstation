@@ -12,11 +12,11 @@ num_workers:100,num_round:100,max_depth:8,subsample:0.8,colsample_bytree:0.8,min
 
 # only xgb
 # rank.xgb4s.training.BaseXgbTraining
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[713-715]/instance
-hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200716/instance
-hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_001
-hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_001.log
-num_workers:100,num_round:200,max_depth:8,subsample:0.8,colsample_bytree:0.8,min_child_weight:2,scale_pos_weight:1,lambda:1,alpha:0,gamma:0.2,eta:0.1
+hdfs://suninghadoop2/user/predict/dinglei/xfea2/dt=20200[713-715]/instance
+hdfs://suninghadoop2/user/predict/dinglei/xfea2/dt=20200716/instance
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/xgb_011
+hdfs://suninghadoop2/user/predict/dinglei/xgb_test/output/training_011.log
+num_workers:100,num_round:100,max_depth:8,subsample:0.8,colsample_bytree:0.8,min_child_weight:2,scale_pos_weight:1,lambda:1,alpha:0,gamma:0.2,eta:0.1
 
 hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200[801-804]/instance
 hdfs://suninghadoop2/user/predict/dinglei/xfea/dt=20200805/instance

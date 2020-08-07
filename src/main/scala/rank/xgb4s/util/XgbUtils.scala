@@ -67,7 +67,7 @@ object XgbUtils {
   def paramsParse(params_str: String): Map[String, Any] = {
     var params_map = new mutable.HashMap[String, Any]
     val params_kvs = params_str.stripMargin.split(",")
-    val float_pas = Set("subsample", "colsample_bytree", "min_child_weight", "scale_pos_weight", "eta")
+    val float_pas = Set("subsample", "colsample_bytree", "min_child_weight", "scale_pos_weight", "eta", "gamma")
     for(pa <- params_kvs) {
       val tokens = pa.stripMargin.split(":")
       if(float_pas.contains(tokens(0)))
